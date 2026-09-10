@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0">
+
+    <title>VoxShield Live Detector</title>
+
+    <style>
+
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 60px auto;
+            padding: 20px;
+        }
+
+        h1 {
+            margin-bottom: 10px;
+        }
+
+        button {
+            padding: 12px 20px;
+            margin-right: 10px;
+            cursor: pointer;
+        }
+
+        #status {
+            margin-top: 30px;
+            font-size: 18px;
+        }
+
+        #verdict {
+            margin-top: 20px;
+            font-size: 28px;
+            font-weight: bold;
+        }
+
+        #score {
+            margin-top: 10px;
+            font-size: 18px;
+        }
+
+        #log {
+            margin-top: 30px;
+            padding: 15px;
+            background: #f3f3f3;
+            height: 200px;
+            overflow-y: auto;
+            font-family: monospace;
+        }
+
+    </style>
+
+</head>
+
+<body>
+
+    <h1>VoxShield</h1>
+
+    <p>
+        Real-time AI voice-cloning detector
+    </p>
+
+    <button id="start">
+        Start Detection
+    </button>
+
+    <button id="stop" disabled>
+        Stop
+    </button>
+
+    <div id="status">
+        Status: Ready
+    </div>
+
+    <div id="verdict">
+        —
+    </div>
+
+    <div id="score">
+        AI probability: —
+    </div>
+
+    <div id="log"></div>
+
+
+<script>
+
+let websocket = null;
+let audioContext = null;
+let microphone = null;
+let processor = null;
+let stream = null;
+
+const startButton = document.getElementById("start");
+const stopButton = document.getElementById("stop");
+
+const statusEl = document.getElementById("status");
+const verdictEl = document.getElementById("verdict");
+const scoreEl = document.getElementById("score");
+const logEl = document.getElementById("log");
+
+
+function log(message) {
+
+    logEl.textContent += message + "\n";
+
+    logEl.scrollTop = logEl.scrollHeight;
+}
+
+
+/* =========================
+   START DETECTION
+   ========================= */
+
+async function startDetection() {
+
+    try {
+
+        startButton.disabled = true;
+        stopButton.disabled = false;
+
+        statusEl.textContent = "Requesting microphone...";
+        log("Starting VoxShield...");
+
+        /*
+         * Ask browser for microphone access FIRST.
+         */
+        stream = await navigator.mediaDevices.getUserMedia({
+
+            audio: {
+                channelCount: 1,
+                echoCancellation: false,
+                noiseSuppression: false,
+                autoGainControl: false
+            }
+
+        });
+
+        log("Microphone access granted.");
+
+
+        /*
+         * Create audio context.
+         *
+         * We do NOT assume the browser uses 16 kHz.
+         */
+        audioContext = new AudioContext();
+
+        await audioContext.resume();
+
+        const inputSampleRate =
+            audioContext.sampleRate;
+
+        console.log(
+            "Browser microphone sample rate:",
+            inputSampleRate
+        );
+
+        log(
+            "Browser sample rate: " +
+            inputSampleRate +
+            " Hz"
+        );
+
+
+        /*
+         * Connect to backend AFTER microphone
+         * access has been successfully obtained.
+         */
+        statusEl.textContent = "Connecting to detector...";
+
+        websocket = new WebSocket(
+            "ws://" +
+            window.location.host +
+            "/ws/detect"
+        );
+
+        websocket.binaryType = "arraybuffer";
+
+
+        websocket.onopen = function() {
+
+            log("WebSocket connected.");
+
+            startAudioProcessing();
+
+        };
+
+
+        websocket.onmessage = function(event) {
+
+            try {
+
+                const result =
+                    JSON.parse(event.data);
+
+                updateDetectionResult(result);
+
+            } catch (error) {
+
+                console.error(
+                    "Invalid detector response:",
+                    error
+                );
+
+            }
+        };
+
+
+        websocket.onerror = function(error) {
+
+            console.error(
+                "WebSocket error:",
+                error
+            );
+
+            log("WebSocket error.");
+
+        };
+
+
+        websocket.onclose = function() {
+
+            log("WebSocket closed.");
+
+        };
+
+
+    } catch (error) {
+
+        console.error(
+            "Start detection error:",
+            error
+        );
+
+        log(
+            "Error: " +
+            error.message
+        );
+
+        stopDetection();
+
+    }
+
+}
+
+
+/* =========================
+   AUDIO PROCESSING
+   ========================= */
+
+function startAudioProcessing() {
+
+    microphone =
+        audioContext.createMediaStreamSource(
+            stream
+        );
+
+
+    processor =
+        audioContext.createScriptProcessor(
+            4096,
+            1,
+            1
+        );
+
+
+    microphone.connect(
+        processor
+    );
+
+
+    /*
+     * Connect to destination so the browser
+     * actually processes the ScriptProcessor.
+     *
+     * We do NOT want audible microphone feedback,
+     * so connect through a zero-gain node.
+     */
+
+    const gainNode =
+        audioContext.createGain();
+
+    gainNode.gain.value = 0;
+
+    processor.connect(gainNode);
+
+    gainNode.connect(
+        audioContext.destination
+    );
+
+
+    processor.onaudioprocess =
+        function(event) {
+
+            if (
+                !websocket ||
+                websocket.readyState !==
+                WebSocket.OPEN
+            ) {
+
+                return;
+            }
+
+
+            const input =
+                event.inputBuffer
+                    .getChannelData(0);
+
+
+            /*
+             * Convert whatever the browser gives us
+             * to exactly 16 kHz.
+             */
+            const resampled =
+                resampleTo16k(
+                    input,
+                    audioContext.sampleRate
+                );
+
+
+            /*
+             * Convert Float32 [-1, +1]
+             * to PCM16.
+             */
+            const pcm =
+                float32ToPCM16(
+                    resampled
+                );
+
+
+            websocket.send(
+                pcm.buffer
+            );
+
+        };
+
+
+    statusEl.textContent =
+        "Listening";
+
+    log(
+        "Microphone streaming started."
+    );
+
+    log(
+        "Audio converted to 16 kHz PCM16."
+    );
+
+}
+
+
+/* =========================
+   RESAMPLE TO 16 kHz
+   ========================= */
+
+function resampleTo16k(
+    input,
+    inputSampleRate
+) {
+
+    const targetSampleRate = 16000;
+
+
+    /*
+     * Already 16 kHz.
+     */
+    if (
+        inputSampleRate ===
+        targetSampleRate
+    ) {
+
+        return input;
+
+    }
+
+
+    const outputLength =
+        Math.floor(
+            input.length *
+            targetSampleRate /
+            inputSampleRate
+        );
+
+
+    const output =
+        new Float32Array(
+            outputLength
+        );
+
+
+    const ratio =
+        inputSampleRate /
+        targetSampleRate;
+
+
+    for (
+        let i = 0;
+        i < outputLength;
+        i++
+    ) {
+
+        const position =
+            i * ratio;
+
+        const index =
+            Math.floor(position);
+
+        const fraction =
+            position - index;
+
+
+        if (
+            index + 1 <
+            input.length
+        ) {
+
+            output[i] =
+                input[index] *
+                (1 - fraction) +
+                input[index + 1] *
+                fraction;
+
+        } else {
+
+            output[i] =
+                input[index];
+
+        }
+
+    }
+
+
+    return output;
+
+}
+
+
+/* =========================
+   FLOAT32 → PCM16
+   ========================= */
+
+function float32ToPCM16(
+    float32Array
+) {
+
+    const pcm =
+        new Int16Array(
+            float32Array.length
+        );
+
+
+    for (
+        let i = 0;
+        i < float32Array.length;
+        i++
+    ) {
+
+        let sample =
+            Math.max(
+                -1,
+                Math.min(
+                    1,
+                    float32Array[i]
+                )
+            );
+
+
+        pcm[i] =
+            sample < 0
+                ? sample * 32768
+                : sample * 32767;
+
+    }
+
+
+    return pcm;
+
+}
+
+
+/* =========================
+   UPDATE RESULT
+   ========================= */
+
+function updateDetectionResult(
+    result
+) {
+
+    if (
+        result.status ===
+        "error"
+    ) {
+
+        log(
+            "Detector error: " +
+            result.error
+        );
+
+        return;
+
+    }
+
+
+    if (
+        !result.verdict
+    ) {
+
+        return;
+
+    }
+
+
+    verdictEl.textContent =
+        result.verdict;
+
+
+    if (
+        result.ai_probability !== null &&
+        result.human_probability !== null
+    ) {
+
+        const ai =
+            result.ai_probability *
+            100;
+
+        const human =
+            result.human_probability *
+            100;
+
+
+        scoreEl.textContent =
+            "AI probability: " +
+            ai.toFixed(2) +
+            "% | Human probability: " +
+            human.toFixed(2) +
+            "%";
+
+
+        log(
+            result.verdict +
+            " | AI: " +
+            result.ai_probability
+        );
+
+    }
+
+}
+
+
+/* =========================
+   STOP DETECTION
+   ========================= */
+
+function stopDetection() {
+
+    if (processor) {
+
+        processor.disconnect();
+
+        processor.onaudioprocess =
+            null;
+
+        processor = null;
+
+    }
+
+
+    if (microphone) {
+
+        microphone.disconnect();
+
+        microphone = null;
+
+    }
+
+
+    if (stream) {
+
+        stream
+            .getTracks()
+            .forEach(
+                track =>
+                    track.stop()
+            );
+
+        stream = null;
+
+    }
+
+
+    if (audioContext) {
+
+        audioContext.close();
+
+        audioContext = null;
+
+    }
+
+
+    if (websocket) {
+
+        websocket.close();
+
+        websocket = null;
+
+    }
+
+
+    startButton.disabled = false;
+
+    stopButton.disabled = true;
+
+
+    statusEl.textContent =
+        "Status: Stopped";
+
+    log(
+        "Detection stopped."
+    );
+
+}
+
+startButton.addEventListener(
+    "click",
+    startDetection
+);
+
+
+stopButton.addEventListener(
+    "click",
+    stopDetection
+);
+
+</script>
+
+</body>
+
+</html>
