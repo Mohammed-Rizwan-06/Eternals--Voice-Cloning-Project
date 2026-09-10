@@ -1,0 +1,33 @@
+from typing import Protocol
+
+from voxshield.schemas import AuthenticityResult, CallerInformation, ConversationResult
+
+
+class TelephonyAdapter(Protocol):
+    @property
+    def available(self) -> bool: ...
+    async def end_call(self, call_id: str) -> bool: ...
+
+
+class AuthenticityDetector(Protocol):
+    @property
+    def available(self) -> bool: ...
+    async def analyze(self, audio: bytes, sequence: int) -> AuthenticityResult: ...
+
+
+class TranscriptionAdapter(Protocol):
+    @property
+    def available(self) -> bool: ...
+    async def transcribe(self, audio: bytes, sequence: int) -> ConversationResult: ...
+
+
+class ScamIntelligenceAdapter(Protocol):
+    @property
+    def available(self) -> bool: ...
+    async def analyze(self, transcript: str, sequence: int) -> ConversationResult: ...
+
+
+class CallerReputationAdapter(Protocol):
+    @property
+    def available(self) -> bool: ...
+    async def lookup(self, masked_number: str) -> CallerInformation: ...
