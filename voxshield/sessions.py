@@ -198,6 +198,16 @@ class SessionManager:
         self._emit(record, "risk_updated", risk.model_dump(mode="json"))
         return True
 
+    def bind_call(self, session_id: str, call_id: str) -> None:
+        record = self.records[session_id]
+        record.snapshot = record.snapshot.model_copy(
+            update={"call_id": call_id, "call_state": CallState.ACTIVE, "updated_at": utc_now()}
+        )
+        self._emit(record, "transport_started", {"call_id": call_id})
+
+    def emit_transport(self, session_id: str, event_type: str, payload: dict) -> SSEEvent:
+        return self._emit(self.records[session_id], event_type, payload)
+
     def subscribe(self, session_id: str) -> SubscriberQueue:
         record = self.records[session_id]
         queue: SubscriberQueue = asyncio.Queue(maxsize=self.queue_size)

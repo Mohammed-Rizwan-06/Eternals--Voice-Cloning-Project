@@ -5,7 +5,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
+from voxshield.adapters.authenticity import AASISTAuthenticityDetector
+from voxshield.adapters.conversation import (
+    FasterWhisperTranscriptionAdapter,
+    RuleBasedScamIntelligence,
+)
 from voxshield.config import Settings
+from voxshield.live import live_router
 from voxshield.schemas import (
     HealthResponse,
     ServiceState,
@@ -33,10 +39,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_sessions=config.max_sessions,
     )
     app.state.manager = manager
+    app.state.authenticity = AASISTAuthenticityDetector(
+        config.aasist_checkpoint, config.aasist_source_dir
+    )
+    app.state.transcription = FasterWhisperTranscriptionAdapter(config.whisper_model)
+    app.state.scam = RuleBasedScamIntelligence()
+    app.include_router(live_router(config))
 
     @app.get("/api/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
-        services = ServiceStatus()
+        services = ServiceStatus(
+            telephony=ServiceState.READY
+            if config.public_base_url and config.twilio_auth_token
+            else ServiceState.UNAVAILABLE,
+            authenticity_detector=ServiceState.READY
+            if app.state.authenticity.available
+            else ServiceState.UNAVAILABLE,
+            transcription=ServiceState.READY
+            if app.state.transcription.available
+            else ServiceState.UNAVAILABLE,
+            scam_intelligence=ServiceState.READY,
+        )
         if config.demo_mode:
             services = services.model_copy(
                 update={
