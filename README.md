@@ -1,4 +1,6 @@
-# VoxShield
+# Eternals--Voice-Cloning-Project
+
+## VoxShield
 
 **Trust the voice. Verify the call.**
 
