@@ -8,5 +8,8 @@ venv/
 .env
 *.log
 *.egg-info/
+frontend/node_modules/
+frontend/dist/
+frontend/*.tmp
 .idea/
 .vscode/
